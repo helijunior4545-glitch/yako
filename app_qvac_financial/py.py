@@ -1,97 +1,111 @@
 #!/usr/bin/env python3
-"""AI Yako jury one-click installer. No DB migrations, env exports, or manual provisioning."""
+# AI YAKO — Extração integral de arquivos de código para auditoria
+# Somente leitura do projeto. Saída TXT em ~/Downloads.
+# Uso: python3 /home/farcry/Downloads/ai_yako_auditoria_integral.txt
+# (Python executa scripts .txt explicitamente.)
+
 from pathlib import Path
-import hashlib, os, tempfile, sys
-from datetime import datetime
+from datetime import datetime, timezone
+import hashlib
+import os
+import re
+import sys
 
-TARGET = Path('/home/farcry/Documents/ai-yako/app_qvac_financial/server/api/auth/jury.py')
-BACKUPS = Path('/home/farcry/Downloads')
-if not TARGET.is_file():
-    sys.exit(f'ABORT: missing {TARGET}')
-original = TARGET.read_text(encoding='utf-8')
-# Accept only the two known prior versions, or the idempotent result.
-known = ('def jury_access(request):' in original and
-         'web.issue_session(identity)' in original and
-         ('jury-demo@example.com' in original or 'test.jury@aiyako.com' in original))
-if not known:
-    sys.exit('ABORT: unexpected jury.py; no changes made')
+ROOT = Path('/home/farcry/Documents/ai-yako/app_qvac_financial')
+OUTDIR = Path('/home/farcry/Downloads')
+STAMP = datetime.now().strftime('%Y%m%d-%H%M%S')
+OUTPUT = OUTDIR / f'AI_YAKO_AUDITORIA_CODIGO_COMPLETO_{STAMP}.txt'
 
-replacement = '''"""One-click public jury demo (testnet/simulated data only)."""
-from django.contrib.auth.hashers import make_password
-from django.db import transaction
-from django.http import JsonResponse
-from django.views.decorators.http import require_POST
-from app_qvac_financial.server.security.authentication.yako_csrf import yako_csrf_protect
-from app_qvac_financial.server.security.authentication import web
-from app_qvac_financial.server.django.models import QVACIdentity
-from app_qvac_financial.server.django.models.authentication import QVACWebCredential
+# Inclui código, configuração e documentação legíveis. Arquivos binários são inventariados.
+EXCLUDE_DIRS = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '.mypy_cache', '.pytest_cache', '.next', 'dist', 'build', 'coverage', '.tox', '.idea', '.vscode'}
+EXCLUDE_SUFFIXES = {'.pyc', '.pyo', '.so', '.dll', '.exe', '.class', '.jar', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.mp3', '.mp4', '.mov', '.avi', '.webm', '.wav', '.pdf', '.zip', '.gz', '.tar', '.7z', '.woff', '.woff2', '.ttf', '.otf', '.sqlite', '.sqlite3', '.db', '.bin', '.onnx', '.gguf', '.pt', '.pth', '.safetensors', '.lockb'}
+SECRET_NAMES = {'.env', '.env.local', '.env.production', '.env.development', 'id_rsa', 'id_ed25519', 'credentials.json', 'service-account.json'}
+SECRET_SUFFIXES = {'.pem', '.key', '.p12', '.pfx', '.jks', '.keystore'}
+MAX_FILE_BYTES = 5 * 1024 * 1024  # proteção contra arquivos gigantes
 
-DEMO_EMAIL = 'test.jury@aiyako.com'
+# Substitui valores em atribuições comuns de segredos, preservando estrutura do código.
+SENSITIVE_KEY = re.compile(r'(?i)(?:secret|password|passwd|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret|database[_-]?url|dsn|authorization|bearer)')
+ASSIGNMENT = re.compile(r'(?im)^(\s*(?:[\"\']?[\w.-]+[\"\']?)\s*(?::|=)\s*)([\"\'])([^\r\n]*?)\2(\s*(?:[,#].*)?)$')
+ENV_ASSIGN = re.compile(r'(?im)^(\s*[A-Z][A-Z0-9_]*\s*=\s*)([^\r\n#]+)')
+BEARER = re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+/-]{12,}')
+PRIVATE_BLOCK = re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----', re.S)
 
 
-def get_demo_identity():
-    # Serialize first-time creation across concurrent requests and workers.
-    with transaction.atomic(using='default'):
-        from django.db import connection
-        if connection.vendor != 'postgresql':
-            raise RuntimeError('AI Yako jury demo requires PostgreSQL')
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [527219114])
-        credential = (QVACWebCredential.objects.using('default')
-                      .select_related('identity').filter(email=DEMO_EMAIL).first())
-        if credential is None:
-            identity = QVACIdentity.objects.using('default').create()
-            QVACWebCredential.objects.using('default').create(
-                identity=identity, email=DEMO_EMAIL,
-                password_hash=make_password(None))  # No usable password.
-            return identity
-        if (credential.disabled_at is not None or
-                not credential.identity.is_active or
-                credential.identity.suspended_at is not None):
-            return None  # Explicitly disabled accounts must stay disabled.
-        return credential.identity
+def redact(text):
+    text = PRIVATE_BLOCK.sub('[REDACTED PRIVATE KEY]', text)
+    text = BEARER.sub('Bearer [REDACTED]', text)
+    def repl(m):
+        if SENSITIVE_KEY.search(m.group(1)) and m.group(3).strip():
+            return m.group(1) + m.group(2) + '[REDACTED]' + m.group(2) + m.group(4)
+        return m.group(0)
+    text = ASSIGNMENT.sub(repl, text)
+    def env_repl(m):
+        if SENSITIVE_KEY.search(m.group(1)):
+            return m.group(1) + '[REDACTED]'
+        return m.group(0)
+    return ENV_ASSIGN.sub(env_repl, text)
 
 
-@yako_csrf_protect
-@require_POST
-def jury_access(request):
-    # Always use the dedicated demo identity, never an arbitrary signed-in user.
-    try:
-        identity = get_demo_identity()
-    except Exception:
-        import logging
-        logging.getLogger(__name__).exception('Jury demo provisioning failed')
-        return JsonResponse({'error': 'Demo temporarily unavailable.'}, status=503)
-    if identity is None:
-        return JsonResponse({'error': 'Demo account is disabled.'}, status=403)
-    token = web.issue_session(identity)
-    response = JsonResponse({'ok': True})
-    response.set_cookie(web.COOKIE, token, **web.cookie_options(request))
-    response['Cache-Control'] = 'no-store'
-    return response
-'''
-compile(replacement, str(TARGET), 'exec')
-if original == replacement:
-    print('Already installed; no changes necessary.')
-    sys.exit(0)
-BACKUPS.mkdir(parents=True, exist_ok=True)
-digest = hashlib.sha256(original.encode('utf-8')).hexdigest()
-backup = BACKUPS / f'ai_yako_jury_{datetime.now():%Y%m%d_%H%M%S}_{digest[:12]}.py.bak'
-backup.write_text(original, encoding='utf-8')
-if TARGET.read_text(encoding='utf-8') != original:
-    sys.exit('ABORT: target changed during install')
-fd, tmp = tempfile.mkstemp(prefix='.jury-', suffix='.py', dir=TARGET.parent)
-try:
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        f.write(replacement)
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, TARGET.stat().st_mode)
-    os.replace(tmp, TARGET)
-finally:
-    if os.path.exists(tmp):
-        os.unlink(tmp)
-print('INSTALLED:', TARGET)
-print('BACKUP:', backup)
-print('No export needed. First button click provisions demo identity in PostgreSQL.')
-print('IMPORTANT: publicly accessible shared demo account; ensure all finance routes are testnet-only.')
+def main():
+    if not ROOT.is_dir():
+        sys.exit(f'ERRO: diretório não encontrado: {ROOT}')
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    included = []
+    skipped = []
+    for base, dirs, files in os.walk(ROOT, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if d not in EXCLUDE_DIRS and not (Path(base) / d).is_symlink())
+        for name in sorted(files):
+            p = Path(base) / name
+            rel = p.relative_to(ROOT)
+            if p.is_symlink():
+                skipped.append((str(rel), 'symlink'))
+                continue
+            if name in SECRET_NAMES or p.suffix.lower() in SECRET_SUFFIXES or name.startswith('.env'):
+                skipped.append((str(rel), 'potential-secret-file'))
+                continue
+            if p.suffix.lower() in EXCLUDE_SUFFIXES:
+                skipped.append((str(rel), 'binary-or-asset'))
+                continue
+            try:
+                size = p.stat().st_size
+                if size > MAX_FILE_BYTES:
+                    skipped.append((str(rel), f'over-size-limit:{size}'))
+                    continue
+                raw = p.read_bytes()
+                if b'\x00' in raw:
+                    skipped.append((str(rel), 'binary-content'))
+                    continue
+                content = raw.decode('utf-8')
+                included.append((str(rel), len(raw), hashlib.sha256(raw).hexdigest(), redact(content)))
+            except (OSError, UnicodeError) as exc:
+                skipped.append((str(rel), f'unreadable:{type(exc).__name__}'))
+    with OUTPUT.open('w', encoding='utf-8') as f:
+        f.write('AI YAKO — AUDITORIA INTEGRAL DE CÓDIGO (SOMENTE LEITURA)\n')
+        f.write(f'Gerado em: {datetime.now(timezone.utc).isoformat()}\n')
+        f.write(f'Raiz: {ROOT}\n')
+        f.write('AVISO: REDAÇÃO AUTOMÁTICA DE SEGREDOS É PARCIAL. REVISAR ANTES DE COMPARTILHAR.\n')
+        f.write(f'Arquivos textuais incluídos: {len(included)}\n')
+        f.write(f'Arquivos ignorados/inventariados: {len(skipped)}\n\n')
+        f.write('========== INVENTÁRIO COMPLETO DOS ARQUIVOS TEXTUAIS ==========\n')
+        for rel, size, digest, _ in included:
+            f.write(f'{rel} | bytes={size} | sha256={digest}\n')
+        f.write('\n========== ARQUIVOS NÃO INCLUÍDOS ==========\n')
+        for rel, reason in skipped:
+            f.write(f'{rel} | motivo={reason}\n')
+        for rel, size, digest, content in included:
+            f.write('\n\n' + '=' * 90 + '\n')
+            f.write(f'ARQUIVO: {rel}\nBYTES: {size}\nSHA256 ORIGINAL: {digest}\n')
+            f.write('=' * 90 + '\n')
+            for n, line in enumerate(content.splitlines(keepends=True), 1):
+                f.write(f'{n:06d} | {line}')
+                if not line.endswith(('\n', '\r')):
+                    f.write('\n')
+    print('AUDITORIA CONCLUÍDA')
+    print('Arquivos de texto:', len(included))
+    print('Arquivos inventariados sem conteúdo:', len(skipped))
+    print('Saída:', OUTPUT)
+    print('Tamanho (MB):', round(OUTPUT.stat().st_size / 1024**2, 2))
+    print('ATENÇÃO: revise o TXT para segredos antes de compartilhar.')
+
+if __name__ == '__main__':
+    main()
