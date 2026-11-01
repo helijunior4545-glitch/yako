@@ -155,6 +155,8 @@ def analyze_stream(request):
         yield event('start',{'conversation_id':convo.id,'report':localized,'explanation':engine.explain(report)})
         answer='';metadata={};stream_q=queue.Queue()
         try:
+            # YAKO_FAST_MATH_V1
+            fast_math=desktop_import('yako_fast_math').solve_fast_math(scenario,locale) if mode=='qvac' else None
             # All calculations and risk rules originate from the original V10.34 modules.
             def calc():
                 solve=desktop_import('yako_v1030_reasoning').reason
@@ -165,6 +167,7 @@ def analyze_stream(request):
                 return (verified_solve(scenario,locale) or hybrid_solve(scenario,locale)) or solve(scenario,locale) or portfolio(scenario,locale) or finance.analyze_natural_finance(scenario,locale) or desktop_import('yako_v1020_finance').smart_analysis(scenario,locale)
             try:computed=calc()
             except (ValueError,ArithmeticError):computed=None
+            if fast_math:computed=fast_math
             if computed:
                 answer=computed['answer'];metadata=dict(computed);metadata['model_used']=False
             elif mode=='rules':

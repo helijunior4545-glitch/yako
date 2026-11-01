@@ -25,7 +25,17 @@ urlpatterns = [
 ]
 
 from django.views.decorators.csrf import ensure_csrf_cookie
-urlpatterns = [p if p.name != 'workspace' else path('app/', ensure_csrf_cookie(workspace), name='workspace') for p in urlpatterns]
+from .server.security.authentication.yako_csrf import yako_csrf_page
+
+urlpatterns = [
+    p if p.name != 'workspace'
+    else path(
+        'app/',
+        yako_csrf_page(ensure_csrf_cookie(workspace)),
+        name='workspace'
+    )
+    for p in urlpatterns
+]
 # AI Yako V10.36 — authenticated financial intelligence endpoints
 from .server.api.public import yako_runtime_v1036 as yako36
 urlpatterns += [

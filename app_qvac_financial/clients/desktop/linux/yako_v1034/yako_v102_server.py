@@ -132,6 +132,9 @@ class Handler(BaseHTTPRequestHandler):
         else:cid=db_query('INSERT INTO conversations(title) VALUES (?)',(scenario[:65],))
         history=db_query('SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 24',(cid,),True)
         history=[{'role':r[0],'content':r[1]} for r in reversed(history)]
+        # YAKO_FAST_MATH_V1
+        from yako_fast_math import solve_fast_math
+        fast_math=solve_fast_math(scenario,locale) if mode=='qvac' else None
         # Financial arithmetic is a trusted tool, not an LLM task.
         try:
             computed=(hybrid_solve(scenario,locale) or solve_investments(scenario,locale) or analyze_portfolio(scenario,locale) or analyze_natural_finance(scenario,locale) or explain_concept(scenario,locale)) if mode=='qvac' else (hybrid_solve(scenario,locale) or solve_investments(scenario,locale) or analyze_portfolio(scenario,locale) or analyze_natural_finance(scenario,locale) or smart_analysis(scenario,locale))
@@ -145,6 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             try:self.wfile.write((json.dumps({'type':kind,'data':data},ensure_ascii=False)+'\n').encode());self.wfile.flush();return True
             except (BrokenPipeError,ConnectionResetError,OSError):return False
         emit('start',{'conversation_id':cid,'report':localized_findings(report,locale),'explanation':explain(report)})
+        if fast_math:computed=fast_math
         if computed:
             emit('done',computed)
             db_query('INSERT INTO messages(conversation_id,role,content) VALUES (?,?,?)',(cid,'assistant',computed['answer']))

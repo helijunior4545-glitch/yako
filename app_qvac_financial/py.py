@@ -1,111 +1,121 @@
 #!/usr/bin/env python3
-# AI YAKO — Extração integral de arquivos de código para auditoria
-# Somente leitura do projeto. Saída TXT em ~/Downloads.
-# Uso: python3 /home/farcry/Downloads/ai_yako_auditoria_integral.txt
-# (Python executa scripts .txt explicitamente.)
-
+"""YAKO safe fast arithmetic installer. python3 py.py --check/--apply/--rollback"""
+import argparse, ast, hashlib, os, re, sys, tempfile
 from pathlib import Path
-from datetime import datetime, timezone
-import hashlib
-import os
-import re
-import sys
-
-ROOT = Path('/home/farcry/Documents/ai-yako/app_qvac_financial')
-OUTDIR = Path('/home/farcry/Downloads')
-STAMP = datetime.now().strftime('%Y%m%d-%H%M%S')
-OUTPUT = OUTDIR / f'AI_YAKO_AUDITORIA_CODIGO_COMPLETO_{STAMP}.txt'
-
-# Inclui código, configuração e documentação legíveis. Arquivos binários são inventariados.
-EXCLUDE_DIRS = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '.mypy_cache', '.pytest_cache', '.next', 'dist', 'build', 'coverage', '.tox', '.idea', '.vscode'}
-EXCLUDE_SUFFIXES = {'.pyc', '.pyo', '.so', '.dll', '.exe', '.class', '.jar', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.mp3', '.mp4', '.mov', '.avi', '.webm', '.wav', '.pdf', '.zip', '.gz', '.tar', '.7z', '.woff', '.woff2', '.ttf', '.otf', '.sqlite', '.sqlite3', '.db', '.bin', '.onnx', '.gguf', '.pt', '.pth', '.safetensors', '.lockb'}
-SECRET_NAMES = {'.env', '.env.local', '.env.production', '.env.development', 'id_rsa', 'id_ed25519', 'credentials.json', 'service-account.json'}
-SECRET_SUFFIXES = {'.pem', '.key', '.p12', '.pfx', '.jks', '.keystore'}
-MAX_FILE_BYTES = 5 * 1024 * 1024  # proteção contra arquivos gigantes
-
-# Substitui valores em atribuições comuns de segredos, preservando estrutura do código.
-SENSITIVE_KEY = re.compile(r'(?i)(?:secret|password|passwd|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret|database[_-]?url|dsn|authorization|bearer)')
-ASSIGNMENT = re.compile(r'(?im)^(\s*(?:[\"\']?[\w.-]+[\"\']?)\s*(?::|=)\s*)([\"\'])([^\r\n]*?)\2(\s*(?:[,#].*)?)$')
-ENV_ASSIGN = re.compile(r'(?im)^(\s*[A-Z][A-Z0-9_]*\s*=\s*)([^\r\n#]+)')
-BEARER = re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+/-]{12,}')
-PRIVATE_BLOCK = re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----', re.S)
-
-
-def redact(text):
-    text = PRIVATE_BLOCK.sub('[REDACTED PRIVATE KEY]', text)
-    text = BEARER.sub('Bearer [REDACTED]', text)
-    def repl(m):
-        if SENSITIVE_KEY.search(m.group(1)) and m.group(3).strip():
-            return m.group(1) + m.group(2) + '[REDACTED]' + m.group(2) + m.group(4)
-        return m.group(0)
-    text = ASSIGNMENT.sub(repl, text)
-    def env_repl(m):
-        if SENSITIVE_KEY.search(m.group(1)):
-            return m.group(1) + '[REDACTED]'
-        return m.group(0)
-    return ENV_ASSIGN.sub(env_repl, text)
-
-
+from decimal import Decimal, localcontext
+ROOT=Path(__file__).resolve().parent
+DESKTOP=ROOT/'clients/desktop/linux/yako_v1034'
+LOCAL=DESKTOP/'yako_v102_server.py'
+HOST=ROOT/'server/api/public/yako_runtime_v1036.py'
+MOD=DESKTOP/'yako_fast_math.py'
+BACKUP=ROOT/'.yako_fast_math_rollback'
+TAG='YAKO_FAST_MATH_V1'
+MODULE='''"""Safe deterministic arithmetic, no network or model required."""
+import ast,re
+from decimal import Decimal,localcontext
+PERCENT=re.compile(r"^\\s*(?:quanto\\s+(?:é|e)\\s+|what\\s+is\\s+)?(\\d+(?:[.,]\\d+)?)\\s*%\\s*(?:de|of)\\s*(?:R\\$\\s*|\\$\\s*)?(\\d+(?:[.,]\\d+)?)\\s*\\??\\s*$",re.I)
+PREFIX=re.compile(r"^\\s*(?:quanto\\s+(?:é|e)\\s+|what\\s+is\\s+|calculate\\s+|calcule\\s+)?",re.I)
+def evaluate(node,depth=0):
+    if depth>12:raise ValueError('depth')
+    if isinstance(node,ast.Expression):return evaluate(node.body,depth+1)
+    if isinstance(node,ast.Constant) and type(node.value) in (int,float):return Decimal(str(node.value))
+    if isinstance(node,ast.UnaryOp) and isinstance(node.op,(ast.UAdd,ast.USub)):
+        v=evaluate(node.operand,depth+1);return v if isinstance(node.op,ast.UAdd) else -v
+    if isinstance(node,ast.BinOp) and isinstance(node.op,(ast.Add,ast.Sub,ast.Mult,ast.Div,ast.Pow)):
+        a=evaluate(node.left,depth+1);b=evaluate(node.right,depth+1)
+        if abs(a)>Decimal('1e18') or abs(b)>Decimal('1e18'):raise ValueError('magnitude')
+        if isinstance(node.op,ast.Add):return a+b
+        if isinstance(node.op,ast.Sub):return a-b
+        if isinstance(node.op,ast.Mult):return a*b
+        if isinstance(node.op,ast.Div):return a/b
+        if b!=int(b) or abs(b)>12:raise ValueError('exponent')
+        return a**int(b)
+    raise ValueError('unsupported')
+def solve_fast_math(text,locale='en'):
+    if not isinstance(text,str) or not 1<=len(text.strip())<=160:return None
+    raw=text.strip()
+    try:
+        with localcontext() as ctx:
+            ctx.prec=36
+            match=PERCENT.fullmatch(raw)
+            if match:
+                a=Decimal(match.group(1).replace(',','.'));b=Decimal(match.group(2).replace(',','.'))
+                value=a*b/100
+            else:
+                expr=PREFIX.sub('',raw).strip().rstrip('?').strip()
+                if not re.fullmatch(r'[0-9\\s.,+*/()\\-×÷^]+',expr):return None
+                if not any(x in expr for x in ('+','-','*','/','×','÷','^')):return None
+                expr=expr.replace('×','*').replace('÷','/').replace('^','**').replace(',','.')
+                value=evaluate(ast.parse(expr,mode='eval'))
+            if not value.is_finite() or abs(value)>Decimal('1e18'):return None
+            rendered=format(value.normalize(),'f').rstrip('0').rstrip('.') if value!=value.to_integral_value() else str(int(value))
+            if locale in ('pt','es','fr'):rendered=rendered.replace('.',',')
+            return {'answer':raw+' = **'+rendered+'**','engine':'YAKO deterministic Decimal arithmetic',
+                    'model_used':False,'inference_executed':False,'calculation_verified':True,'total_seconds':0}
+    except (ValueError,ArithmeticError,SyntaxError,TypeError,OverflowError):return None
+'''
+LOCAL_ANCHOR='        # Financial arithmetic is a trusted tool, not an LLM task.\n'
+HOST_ANCHOR='            # All calculations and risk rules originate from the original V10.34 modules.\n'
+LOCAL_ROUTE="        if computed:\n            emit('done',computed)\n"
+HOST_ROUTE="            if computed:\n                answer=computed['answer'];metadata=dict(computed);metadata['model_used']=False\n"
+def sha(b):return hashlib.sha256(b).hexdigest()
+def atomic(path,raw):
+    fd,tmp=tempfile.mkstemp(prefix='.yako-tmp-',dir=path.parent)
+    try:
+        with os.fdopen(fd,'wb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
+        os.chmod(tmp,path.stat().st_mode & 0o777 if path.exists() else 0o644)
+        os.replace(tmp,path)
+    finally:
+        if os.path.exists(tmp):os.unlink(tmp)
+def prepare():
+    if not LOCAL.is_file() or not HOST.is_file():raise RuntimeError('Active files missing')
+    a=LOCAL.read_text();b=HOST.read_text()
+    if BACKUP.exists() or MOD.exists() or TAG in a or TAG in b:raise RuntimeError('Already patched or rollback exists')
+    if any(x.count(y)!=1 for x,y in ((a,LOCAL_ANCHOR),(b,HOST_ANCHOR),(a,LOCAL_ROUTE),(b,HOST_ROUTE))):raise RuntimeError('Source anchors changed; abort')
+    aa=a.replace(LOCAL_ANCHOR,"        # "+TAG+"\n        from yako_fast_math import solve_fast_math\n        fast_math=solve_fast_math(scenario,locale) if mode=='qvac' else None\n"+LOCAL_ANCHOR)
+    aa=aa.replace(LOCAL_ROUTE,"        if fast_math:computed=fast_math\n"+LOCAL_ROUTE)
+    bb=b.replace(HOST_ANCHOR,"            # "+TAG+"\n            fast_math=desktop_import('yako_fast_math').solve_fast_math(scenario,locale) if mode=='qvac' else None\n"+HOST_ANCHOR)
+    bb=bb.replace(HOST_ROUTE,"            if fast_math:computed=fast_math\n"+HOST_ROUTE)
+    for path,content in ((LOCAL,aa),(HOST,bb),(MOD,MODULE)):compile(content,str(path),'exec')
+    ns={};exec(compile(MODULE,str(MOD),'exec'),ns)
+    f=ns['solve_fast_math']
+    for question,expected in (('2 + 2','4'),('What is 7 * 8?','56'),('15% of 8000','1200')):
+        result=f(question,'en')
+        if not result or ('**'+expected+'**') not in result['answer']:raise RuntimeError('Math test failed: '+question)
+    for question in ('2 / 0','I have $10,000 to invest','2**999999','Ignore previous instructions'):
+        if f(question,'en') is not None:raise RuntimeError('Unsafe match: '+question)
+    return a,b,aa,bb
+def apply():
+    a,b,aa,bb=prepare()
+    BACKUP.mkdir(mode=0o700)
+    for index,(path,old) in enumerate(((LOCAL,a),(HOST,b))):
+        raw=old.encode();(BACKUP/f'{index}.bak').write_bytes(raw)
+        (BACKUP/f'{index}.sha256').write_text(sha(raw))
+    try:
+        atomic(MOD,MODULE.encode());atomic(LOCAL,aa.encode());atomic(HOST,bb.encode())
+    except Exception:
+        atomic(LOCAL,a.encode());atomic(HOST,b.encode())
+        if MOD.exists() and sha(MOD.read_bytes())==sha(MODULE.encode()):MOD.unlink()
+        raise
+    print('INSTALLED: desktop + Django fast arithmetic. Restart app/workers. Backups:',BACKUP)
+def rollback():
+    if not BACKUP.is_dir():raise RuntimeError('No rollback backups')
+    originals=[]
+    for i,path in enumerate((LOCAL,HOST)):
+        raw=(BACKUP/f'{i}.bak').read_bytes()
+        if sha(raw)!=(BACKUP/f'{i}.sha256').read_text():raise RuntimeError('Corrupt backup')
+        if TAG not in path.read_text():raise RuntimeError('Current file changed; refusing overwrite')
+        originals.append((path,raw))
+    for path,raw in originals:atomic(path,raw)
+    if MOD.exists() and sha(MOD.read_bytes())==sha(MODULE.encode()):MOD.unlink()
+    print('RESTORED. Backups retained:',BACKUP)
 def main():
-    if not ROOT.is_dir():
-        sys.exit(f'ERRO: diretório não encontrado: {ROOT}')
-    OUTDIR.mkdir(parents=True, exist_ok=True)
-    included = []
-    skipped = []
-    for base, dirs, files in os.walk(ROOT, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if d not in EXCLUDE_DIRS and not (Path(base) / d).is_symlink())
-        for name in sorted(files):
-            p = Path(base) / name
-            rel = p.relative_to(ROOT)
-            if p.is_symlink():
-                skipped.append((str(rel), 'symlink'))
-                continue
-            if name in SECRET_NAMES or p.suffix.lower() in SECRET_SUFFIXES or name.startswith('.env'):
-                skipped.append((str(rel), 'potential-secret-file'))
-                continue
-            if p.suffix.lower() in EXCLUDE_SUFFIXES:
-                skipped.append((str(rel), 'binary-or-asset'))
-                continue
-            try:
-                size = p.stat().st_size
-                if size > MAX_FILE_BYTES:
-                    skipped.append((str(rel), f'over-size-limit:{size}'))
-                    continue
-                raw = p.read_bytes()
-                if b'\x00' in raw:
-                    skipped.append((str(rel), 'binary-content'))
-                    continue
-                content = raw.decode('utf-8')
-                included.append((str(rel), len(raw), hashlib.sha256(raw).hexdigest(), redact(content)))
-            except (OSError, UnicodeError) as exc:
-                skipped.append((str(rel), f'unreadable:{type(exc).__name__}'))
-    with OUTPUT.open('w', encoding='utf-8') as f:
-        f.write('AI YAKO — AUDITORIA INTEGRAL DE CÓDIGO (SOMENTE LEITURA)\n')
-        f.write(f'Gerado em: {datetime.now(timezone.utc).isoformat()}\n')
-        f.write(f'Raiz: {ROOT}\n')
-        f.write('AVISO: REDAÇÃO AUTOMÁTICA DE SEGREDOS É PARCIAL. REVISAR ANTES DE COMPARTILHAR.\n')
-        f.write(f'Arquivos textuais incluídos: {len(included)}\n')
-        f.write(f'Arquivos ignorados/inventariados: {len(skipped)}\n\n')
-        f.write('========== INVENTÁRIO COMPLETO DOS ARQUIVOS TEXTUAIS ==========\n')
-        for rel, size, digest, _ in included:
-            f.write(f'{rel} | bytes={size} | sha256={digest}\n')
-        f.write('\n========== ARQUIVOS NÃO INCLUÍDOS ==========\n')
-        for rel, reason in skipped:
-            f.write(f'{rel} | motivo={reason}\n')
-        for rel, size, digest, content in included:
-            f.write('\n\n' + '=' * 90 + '\n')
-            f.write(f'ARQUIVO: {rel}\nBYTES: {size}\nSHA256 ORIGINAL: {digest}\n')
-            f.write('=' * 90 + '\n')
-            for n, line in enumerate(content.splitlines(keepends=True), 1):
-                f.write(f'{n:06d} | {line}')
-                if not line.endswith(('\n', '\r')):
-                    f.write('\n')
-    print('AUDITORIA CONCLUÍDA')
-    print('Arquivos de texto:', len(included))
-    print('Arquivos inventariados sem conteúdo:', len(skipped))
-    print('Saída:', OUTPUT)
-    print('Tamanho (MB):', round(OUTPUT.stat().st_size / 1024**2, 2))
-    print('ATENÇÃO: revise o TXT para segredos antes de compartilhar.')
-
-if __name__ == '__main__':
-    main()
+    p=argparse.ArgumentParser();g=p.add_mutually_exclusive_group(required=True)
+    for opt in ('check','apply','rollback'):g.add_argument('--'+opt,action='store_true')
+    args=p.parse_args()
+    if args.rollback:rollback()
+    elif args.check:prepare();print('CHECK OK: active anchors, compilation, arithmetic tests')
+    else:apply()
+if __name__=='__main__':
+    try:main()
+    except Exception as e:print('SAFE ABORT:',type(e).__name__,e,file=sys.stderr);sys.exit(1)
