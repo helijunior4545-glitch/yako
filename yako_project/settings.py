@@ -1,6 +1,7 @@
 """Standalone Django host for AI YAKO. PostgreSQL only."""
 import os
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlsplit
 from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -14,10 +15,10 @@ def required(name):
 def csv_env(name, default=''):
     return [x.strip() for x in os.getenv(name, default).split(',') if x.strip()]
 
-SECRET_KEY = required('DJANGO_SECRET_KEY')
+SECRET_KEY = os.getenv('SECRET_KEY') or required('DJANGO_SECRET_KEY')
 DEBUG = os.getenv('DJANGO_DEBUG', 'false').lower() == 'true'
-ALLOWED_HOSTS = csv_env('DJANGO_ALLOWED_HOSTS', '127.0.0.1,localhost')
-CSRF_TRUSTED_ORIGINS = csv_env('DJANGO_CSRF_TRUSTED_ORIGINS')
+ALLOWED_HOSTS = csv_env('ALLOWED_HOSTS') or csv_env('DJANGO_ALLOWED_HOSTS', '127.0.0.1,localhost')
+CSRF_TRUSTED_ORIGINS = csv_env('CSRF_TRUSTED_ORIGINS') or csv_env('DJANGO_CSRF_TRUSTED_ORIGINS')
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -50,15 +51,43 @@ TEMPLATES = [{
 }]
 WSGI_APPLICATION = 'yako_project.wsgi.application'
 ASGI_APPLICATION = 'yako_project.asgi.application'
-DATABASES = {'default': {
-    'ENGINE': 'django.db.backends.postgresql',
-    'NAME': required('POSTGRES_DB'),
-    'USER': required('POSTGRES_USER'),
-    'PASSWORD': required('POSTGRES_PASSWORD'),
-    'HOST': os.getenv('POSTGRES_HOST', '127.0.0.1'),
-    'PORT': os.getenv('POSTGRES_PORT', '5432'),
-    'CONN_MAX_AGE': 60,
-}}
+def postgres_settings():
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        return {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': required('POSTGRES_DB'),
+            'USER': required('POSTGRES_USER'),
+            'PASSWORD': required('POSTGRES_PASSWORD'),
+            'HOST': os.getenv('POSTGRES_HOST', '127.0.0.1'),
+            'PORT': os.getenv('POSTGRES_PORT', '5432'),
+            'CONN_MAX_AGE': 60,
+        }
+
+    try:
+        url = urlsplit(database_url)
+        port = url.port
+        if url.scheme not in {'postgresql', 'postgres'} or not url.hostname or not url.path.strip('/') or url.fragment:
+            raise ValueError()
+        options = dict(parse_qsl(url.query, strict_parsing=True))
+        supported_options = {'sslmode', 'sslrootcert', 'connect_timeout'}
+        if options.keys() - supported_options:
+            raise ValueError()
+    except ValueError:
+        raise ImproperlyConfigured('DATABASE_URL must be a supported PostgreSQL URL.') from None
+    return {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': unquote(url.path[1:]),
+        'USER': unquote(url.username or ''),
+        'PASSWORD': unquote(url.password or ''),
+        'HOST': url.hostname,
+        'PORT': port or 5432,
+        'CONN_MAX_AGE': 60,
+        'OPTIONS': options,
+    }
+
+
+DATABASES = {'default': postgres_settings()}
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
