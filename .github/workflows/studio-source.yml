@@ -1,0 +1,44 @@
+name: LojasNova Studio source
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  statuses: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Publish source image and announce its digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-studio-source"
+          stage=$(mktemp -d)
+          trap 'rm -rf "$stage"' EXIT
+          git archive --format=tar.gz "$GITHUB_SHA" -- . \
+            ':(exclude,icase,glob)**/.env*' \
+            ':(exclude,icase,glob)**/.github' \
+            ':(exclude,icase,glob)**/.github/**' > "$stage/studio-source.tar.gz"
+          printf 'FROM scratch\nCOPY studio-source.tar.gz /studio-source.tar.gz\n' > "$stage/Dockerfile"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx build --platform linux/arm64 --push \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --metadata-file "$stage/metadata.json" --tag "$image:$GITHUB_SHA" "$stage"
+          digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$stage/metadata.json")
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state=success -f context=lojasnova/studio-source \
+            -f description='Studio source image published' \
+            -f target_url="https://$image@$digest" >/dev/null
+          printf 'Studio source image: `%s@%s`\n' "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
