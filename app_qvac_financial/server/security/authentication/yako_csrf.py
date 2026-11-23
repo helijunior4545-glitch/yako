@@ -32,14 +32,17 @@ def _issue(response, request):
     return response
 
 def _origin_ok(request):
-    # Compare against the externally visible origin (Django trusted proxy settings).
-    expected = urlsplit(request.build_absolute_uri('/'))
+    # Studio declares the public HTTPS origin even when TLS ends at the proxy.
+    # Use it only for the Django-validated Host of this request.
+    host = request.get_host().lower()
+    https_origin = f'https://{host}'
+    scheme = 'https' if https_origin in settings.CSRF_TRUSTED_ORIGINS else request.scheme
     for key in ('HTTP_ORIGIN', 'HTTP_REFERER'):
         value = request.META.get(key)
         if value:
             try:
                 got = urlsplit(value)
-                if got.scheme != expected.scheme or got.netloc != expected.netloc:
+                if got.scheme != scheme or got.netloc.lower() != host:
                     return False
             except ValueError:
                 return False
